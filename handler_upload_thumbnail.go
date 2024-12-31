@@ -1,9 +1,15 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
 	"github.com/google/uuid"
@@ -42,10 +48,14 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 	defer file.Close()
 
 	contentType := header.Header.Get("Content-Type")
-
-	body, err := io.ReadAll(file)
+	mime, _, err := mime.ParseMediaType(contentType)
 	if err != nil {
-		respondWithError(w, http.StatusBadRequest, "Unable to parse image data", err)
+		respondWithError(w, http.StatusBadRequest, "Unable to retrieve asset mime type", err)
+		return
+	}
+
+	if mime != "image/jpeg" && mime != "image/png" {
+		respondWithError(w, http.StatusBadRequest, "Invalid file type. Please upload a jpeg or png.", err)
 		return
 	}
 
@@ -55,14 +65,30 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	newVideo := thumbnail{
-		data:      body,
-		mediaType: contentType,
+	thumbnailRand := make([]byte, 32)
+	_, err = rand.Read(thumbnailRand)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Unable to get random thumbnail name", err)
+		return
 	}
 
-	videoThumbnails[videoID] = newVideo
+	thumbnailName := base64.RawURLEncoding.EncodeToString(thumbnailRand)
 
-	thumbnailUrl := fmt.Sprintf("localhost:8091/api/thumbnails/%s", videoID.String())
+	path := filepath.Join(cfg.assetsRoot, thumbnailName+"."+strings.Split(mime, "/")[1])
+
+	asset, err := os.Create(path)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Unable to save new asset", err)
+		return
+	}
+
+	_, err = io.Copy(asset, file)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Unable to copy content to new asset", err)
+		return
+	}
+
+	thumbnailUrl := fmt.Sprintf("http://localhost:%s/%s", cfg.port, path)
 	video.ThumbnailURL = &thumbnailUrl
 
 	err = cfg.db.UpdateVideo(video)
