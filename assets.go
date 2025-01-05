@@ -44,8 +44,8 @@ func getVideoAspectRatio(filePath string) (string, error) {
 	}
 
 	var sixteenByNine, nineBySixteen float32
-	sixteenByNine = 16 / 9
-	nineBySixteen = 9 / 16
+	sixteenByNine = float32(16 / 9)
+	nineBySixteen = float32(9 / 16)
 
 	if float32(res.Streams[0].Width/res.Streams[0].Height) == sixteenByNine {
 		return "16:9", nil
