@@ -15,6 +15,8 @@ import (
 	"github.com/google/uuid"
 )
 
+var tempFileName = "tubely-upload.mp4"
+
 func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request) {
 	videoIDString := r.PathValue("videoID")
 	videoID, err := uuid.Parse(videoIDString)
@@ -70,7 +72,7 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	tempFile, err := os.CreateTemp("", "tubely-upload.mp4")
+	tempFile, err := os.CreateTemp("", tempFileName)
 	if err != nil {
 		respondWithError(w, http.StatusBadRequest, "Unable to create temp file", err)
 		return
@@ -91,6 +93,21 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	processedTempFilePath, err := processVideoForFastStart(tempFile.Name())
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Unable to process file for fast start", err)
+		return
+	}
+
+	processedTempFile, err := os.Open(processedTempFilePath)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Unable to open processed file for fast start", err)
+		return
+	}
+
+	defer os.Remove(processedTempFile.Name())
+	defer processedTempFile.Close()
+
 	videoNameRand := make([]byte, 32)
 	_, err = rand.Read(videoNameRand)
 	if err != nil {
@@ -98,12 +115,28 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	videoName := base64.RawURLEncoding.EncodeToString(videoNameRand) + "." + strings.Split(mime, "/")[1]
+	aspectRatio, err := getVideoAspectRatio(tempFile.Name())
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Unable to get aspect ratio", err)
+		return
+	}
+
+	var prefix string
+
+	if aspectRatio == "16:9" {
+		prefix = "landscape"
+	} else if aspectRatio == "9:16" {
+		prefix = "portrait"
+	} else {
+		prefix = "other"
+	}
+
+	videoName := prefix + "/" + base64.RawURLEncoding.EncodeToString(videoNameRand) + "." + strings.Split(mime, "/")[1]
 
 	params := s3.PutObjectInput{
 		Bucket:      &cfg.s3Bucket,
 		Key:         &videoName,
-		Body:        tempFile,
+		Body:        processedTempFile,
 		ContentType: &mime,
 	}
 
@@ -113,12 +146,18 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	videoURL := fmt.Sprintf("https://%s.s3.%s.amazonaws.com/%s", cfg.s3Bucket, cfg.s3Region, videoName)
+	videoURL := fmt.Sprintf("%s, %s", cfg.s3Bucket, videoName)
 	video.VideoURL = &videoURL
 
 	err = cfg.db.UpdateVideo(video)
 	if err != nil {
 		respondWithError(w, http.StatusBadRequest, "Unable to update video data", err)
+		return
+	}
+
+	video, err = cfg.dbVideoToSignedVideo(video)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Unable to get signed video", err)
 		return
 	}
 
